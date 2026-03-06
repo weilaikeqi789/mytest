@@ -1,0 +1,273 @@
+-- ============================================================================
+-- 标签标题事件处理器
+-- 美化版：渐变效果、主题色、清晰的状态区分
+-- ============================================================================
+
+local wezterm = require("wezterm")
+local theme_manager = require("colors.themes")
+local theme = theme_manager.get_theme()
+
+-- ============================================================================
+-- 图标定义（使用 Nerd Font 图标）
+-- ============================================================================
+local SOLID_LEFT = ""          -- 左箭头
+local SOLID_RIGHT = ""         -- 右箭头
+local ICON_UNSEEN = "●"          -- 未读提示
+local ICON_ADMIN = " "          -- 管理员图标
+
+-- ============================================================================
+-- 进程图标映射（简洁风格）
+-- ============================================================================
+local PROCESS_ICONS = {
+  -- 编辑器
+  ["vim"] = " ",
+  ["nvim"] = " ",
+  ["nano"] = " ",
+  ["code"] = "󰨞 ",
+  ["hx"] = " ",
+
+  -- 构建工具
+  ["npm"] = " ",
+  ["yarn"] = " ",
+  ["pnpm"] = " ",
+  ["make"] = " ",
+  ["cargo"] = " ",
+  ["go"] = " ",
+
+  -- 编程语言
+  ["python"] = " ",
+  ["python3"] = " ",
+  ["node"] = " ",
+  ["ruby"] = " ",
+  ["php"] = " ",
+  ["java"] = " ",
+  ["lua"] = " ",
+
+  -- 网络工具
+  ["ssh"] = "󰣀 ",
+  ["curl"] = "󰖟 ",
+  ["wget"] = "󰇚 ",
+
+  -- 包管理器
+  ["apt"] = " ",
+  ["yum"] = " ",
+  ["brew"] = " ",
+  ["scoop"] = " ",
+
+  -- 搜索工具
+  ["grep"] = " ",
+  ["rg"] = " ",
+  ["find"] = " ",
+  ["fd"] = " ",
+  ["fzf"] = " ",
+
+  -- Git
+  ["git"] = "󰊢 ",
+  ["lazygit"] = "󰊢 ",
+
+  -- Shell
+  ["bash"] = " ",
+  ["zsh"] = " ",
+  ["fish"] = "󰈺 ",
+  ["pwsh"] = "󰨊 ",
+  ["powershell"] = "󰨊 ",
+  ["cmd"] = " ",
+  ["nu"] = "> ",
+
+  -- 其他
+  ["docker"] = "󰡨 ",
+  ["htop"] = " ",
+  ["btop"] = " ",
+  ["top"] = " ",
+}
+
+local M = {}
+
+M.cells = {}
+
+-- 标签最大宽度（字符数），在 fancy tab bar 模式下手动控制
+M.TAB_MAX_WIDTH = 32
+
+-- ============================================================================
+-- 从主题获取标签颜色
+-- ============================================================================
+local palette = theme.palette
+
+M.colors = {
+  tab_bar_bg = palette.crust,
+  -- 活跃标签：使用主题强调色
+  active = {
+    bg = palette.mauve,
+    fg = palette.crust,
+    edge = palette.mauve,
+  },
+  -- 非活跃标签
+  inactive = {
+    bg = palette.surface0,
+    fg = palette.subtext0,
+    edge = palette.surface0,
+  },
+  -- 悬停标签
+  hover = {
+    bg = palette.surface1,
+    fg = palette.text,
+    edge = palette.surface1,
+  },
+  -- 未读输出提示
+  unseen = palette.peach,
+  -- 管理员标识
+  admin = palette.red,
+}
+
+-- 从完整路径提取进程名
+M.get_process_name = function(s)
+  if not s or s == "" then
+    return ""
+  end
+  local name = string.gsub(s, "(.*[/\\])(.*)", "%2")
+  return name:gsub("%.exe$", ""):lower()
+end
+
+-- 获取进程对应的图标
+M.get_process_icon = function(process_name)
+  return PROCESS_ICONS[process_name] or " "
+end
+
+-- 获取当前工作目录名
+M.get_cwd = function(pane)
+  local cwd = pane.current_working_dir
+  if not cwd then
+    return ""
+  end
+
+  local cwd_uri = cwd
+  if type(cwd) == "userdata" then
+    cwd_uri = cwd.file_path
+  end
+
+  if not cwd_uri then
+    return ""
+  end
+
+  local dir = cwd_uri:gsub("^file://[^/]*/", "")
+  dir = dir:gsub("^/([A-Z]):/", "%1:/")
+
+  local basename = dir:match("([^/\\]+)[/\\]?$") or dir
+  return basename
+end
+
+-- 生成标签标题
+M.set_title = function(process_name, static_title, active_title, max_width, inset, pane)
+  local title
+  inset = inset or 8
+
+  local icon = M.get_process_icon(process_name)
+  local cwd = M.get_cwd(pane)
+
+  if static_title and static_title ~= "" then
+    title = icon .. static_title
+  elseif cwd ~= "" then
+    title = icon .. cwd
+  elseif process_name ~= "" then
+    title = icon .. process_name
+  else
+    title = icon .. (active_title or "Terminal")
+  end
+
+  -- 使用手动设置的最大宽度（fancy tab bar 模式下 WezTerm 的 max_width 不可靠）
+  local effective_max = M.TAB_MAX_WIDTH
+  local max_len = effective_max - inset
+  if max_len > 0 and #title > max_len then
+    title = wezterm.truncate_right(title, max_len - 1) .. "…"
+  end
+
+  return title
+end
+
+-- 检查是否以管理员身份运行
+M.check_if_admin = function(title)
+  return title and title:match("^Administrator: ") ~= nil
+end
+
+-- 添加格式化单元格
+M.push = function(bg, fg, text, italic)
+  table.insert(M.cells, { Background = { Color = bg } })
+  table.insert(M.cells, { Foreground = { Color = fg } })
+  if italic then
+    table.insert(M.cells, { Attribute = { Italic = true } })
+  end
+  table.insert(M.cells, { Text = text })
+end
+
+-- 注册事件处理器
+M.setup = function()
+  wezterm.on("format-tab-title", function(tab, tabs, panes, config, hover, max_width)
+    M.cells = {}
+
+    local colors
+    local process_name = M.get_process_name(tab.active_pane.foreground_process_name)
+    local is_admin = M.check_if_admin(tab.active_pane.title)
+    local title = M.set_title(
+      process_name,
+      tab.tab_title,
+      tab.active_pane.title,
+      max_width,
+      (is_admin and 10 or 8),
+      tab.active_pane
+    )
+
+    -- 根据状态选择颜色
+    if tab.is_active then
+      colors = M.colors.active
+    elseif hover then
+      colors = M.colors.hover
+    else
+      colors = M.colors.inactive
+    end
+
+    -- 检查是否有未读输出
+    local has_unseen_output = false
+    for _, pane in ipairs(tab.panes) do
+      if pane.has_unseen_output then
+        has_unseen_output = true
+        break
+      end
+    end
+
+    -- 构建标签内容
+
+    -- 左边缘（箭头过渡效果）
+    M.push(M.colors.tab_bar_bg, colors.edge, SOLID_LEFT)
+
+    -- 标签索引
+    local index_text = " " .. tostring(tab.tab_index + 1) .. " "
+    if tab.is_active then
+      M.push(colors.bg, colors.fg, index_text)
+    else
+      M.push(colors.bg, palette.overlay0, index_text)
+    end
+
+    -- 分隔符
+    M.push(colors.bg, palette.overlay0, "│")
+
+    -- 管理员图标
+    if is_admin then
+      M.push(colors.bg, M.colors.admin, ICON_ADMIN)
+    end
+
+    -- 标题
+    M.push(colors.bg, colors.fg, " " .. title .. " ")
+
+    -- 未读输出提示
+    if has_unseen_output then
+      M.push(colors.bg, M.colors.unseen, ICON_UNSEEN .. " ")
+    end
+
+    -- 右边缘
+    M.push(M.colors.tab_bar_bg, colors.edge, SOLID_RIGHT)
+
+    return M.cells
+  end)
+end
+
+return M
